@@ -2,6 +2,8 @@
 #
 from time import sleep_ms  # type: ignore
 from machine import Timer
+import SX1509
+from IO_Types import *
 
 import frontpanel as fp
 import re
@@ -12,13 +14,17 @@ flame_state_template = {
     "open": False,
     "midi": False,  # midi learn modus
     "hold_timer": None,
-    "max_time_timer": None
+    "max_time_timer": None,
+    "ioport": 0
 }
 
 flame_state = {}
 flame_names = fp.getFlamesNames()
+ioport =0 
 for flame in flame_names:
     flame_state[flame] = flame_state_template.copy()
+    flame_state[flame]["ioport"] = ioport
+    ioport = ioport + 1
 
 note_to_flame = {}  # type: ignore
 
@@ -66,9 +72,59 @@ def setFlameStateLeds(color_map):
         else:
             fp.setFlameLed(flame, color_map["disabled"])
 
+# ------------------------------- setup relays ------------------------------ #
+
+ioexpander = SX1509.SX1509()
+for r in range(15):
+    ioexpander.pinMode(r,PIN_TYPE_OUTPUT)
+    ioexpander.digitalWrite(r,0)
+    
+def updateRelay(flame):
+    global flame_state, ioexpander
+    if flame_state[flame]["enabled"] and flame_state[flame]["open"]:
+        ioexpander.digitalWrite(flame_state[flame]["ioport"],1)
+    else:
+        ioexpander.digitalWrite(flame_state[flame]["ioport"],0)
+
+def updateRelays():    
+    for flame in flame_names:
+        updateRelay(flame)   
+
+def allRelayOff(update_state=False):
+    global ioexpander, flame_state, update_leds
+    ioexpander._write_reg_16(SX1509._SX1509_RegDataB,0)
+    if update_state:
+        for flame in flame_names:
+            flame_state[flame]["open"] = False
+            update_leds = True
+
+def next_flame(flame) -> str:
+    global flame_state
+    found_it = False
+    ret = None
+    for f in flame_names:
+        if f == flame:
+            found_it = True
+            continue
+        
+        if found_it:
+            if flame_state[f]["enabled"]:
+                return f
+    
+    # fall through
+    if flame != first_flame:
+        return next_flame(first_flame)
+    
+    return ret 
+
 note_cmd_re = re.compile(r'^midi (note_.*) channel=(\d+) note=(\d+) velocity=(\d+)')
 note_cmd = ""
 update_leds = False
+lastSeqState = None
+seqflame = None
+first_flame = flame_names[0]
+last_flame = flame_names[-1]
+
 
 try:
     while True:
@@ -93,10 +149,16 @@ try:
 
         update_leds = False
         
-        if fp.getSeqState():
-            fp.blinkSequenceLed("green")
-        else:
-            fp.blinkSequenceLed("blue")
+        if fp.sequencer_speed_reader.has_changed or fp.getSeqState() != lastSeqState:
+            if fp.getSeqState():
+                fp.blinkSequenceLed("green")
+                if not lastSeqState:
+                    seqflame = next_flame(first_flame)
+            else:
+                fp.blinkSequenceLed("blue")
+            lastSeqState = fp.getSeqState()
+
+
 
         modus = fp.getMode()
         lmodus = fp.getLearnMode()
@@ -107,6 +169,9 @@ try:
             for midiflame in flame_names:
                 flame_state[midiflame]["midi"] = False
 
+        if  modus not in ("live", "learnlive"):
+            allRelayOff()
+            
         if modus == "off":
             fp.allFlameLeds("off")
         elif modus == "learn":
@@ -177,17 +242,17 @@ try:
                         "enabled": "green",
                         "midi": "blue",
                         "note": "blue",
-                        "open": "red",
+                        "open": "violet",
                     }
                 )
             else:
                 setFlameStateLeds(
                     {
                         "disabled": "off",
-                        "enabled": "green",
+                        "enabled": "purple",
                         "midi": "blue",
                         "note": "blue",
-                        "open": "orange",
+                        "open": "yellow",
                     }
                 )
                 
@@ -199,7 +264,7 @@ try:
                     else:
                         if flame_state[flame]["open"]:
                             killFlame(flame)
-                            
+                                    
             if note_cmd:
                 if note_cmd == "note_on":
                     if note in note_to_flame:
@@ -211,8 +276,9 @@ try:
                         for nf in note_to_flame[note]:
                             killFlame(nf)
                     note_cmd = ""
-        
-        
+                    
+            if  modus in ("live", "learnlive"):
+                updateRelays()
 
 except KeyboardInterrupt:  # trap Ctrl-C input
     terminateThread = True  

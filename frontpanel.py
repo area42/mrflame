@@ -165,6 +165,9 @@ colorTable: Dict[str,Tuple]= {
     "orange" : (196,50,0),  
     "white": (255,255,255),
     "blue" :(0,0,255),
+    "purple": (255,0,255),
+    "yellow":(255,255,0),
+    "violet":(138,43,226),
 }
 
 pixels.brightness(255)
